@@ -6,27 +6,90 @@
 
 extern const MimeType MIME_TYPES[];
 
-Response::Response(int fd) : connfd(fd), statusCode(200) {}
+Response::Response(int fd) : connfd(fd), statusCode(HttpStatus::OK) {}
 
-std::string Response::renderTemplate(const std::string& templateName) {
-    std::string templatePath = std::string(Config::TEMPLATE_DIR) + "/" + templateName;
-    if (!std::filesystem::exists(templatePath)) {
-        throw std::runtime_error("Template not found: " + templatePath);
-    }
-
-    try {
-        body = Utils::readFile(templatePath);
-        headers["Content-Type"] = "text/html";
-        return body;
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to render template: " + std::string(e.what()));
-    }
+Response& Response::setStatus(HttpStatus code) { 
+    statusCode = code; 
+    return *this; 
 }
 
-std::pair<int, std::string> Response::sendFile(const std::string& filePath) {
+Response& Response::setStatus(int code) { 
+    statusCode = static_cast<HttpStatus>(code); 
+    return *this; 
+}
+
+Response& Response::setHeader(const std::string& key, const std::string& value) { 
+    headers[key] = value; 
+    return *this; 
+}
+
+Response& Response::setBody(const std::string& content) { 
+    body = content; 
+    return *this; 
+}
+
+Response& Response::setJson(const json& data) { 
+    body = data.dump(); 
+    setHeader("Content-Type", "application/json"); 
+    return *this; 
+}
+
+Response& Response::setCookie(const std::string& key, const std::string& value, const std::string& path = "/", int maxAge = 0, bool secure = false, bool httpOnly = false) {
+    std::ostringstream cookie;
+    cookie << key << "=" << value;
+    
+    if (!path.empty()) {
+        cookie << "; Path=" << path;
+    }
+    
+    if (maxAge > 0) {
+        cookie << "; Max-Age=" << maxAge;
+    }
+    
+    if (secure) {
+        cookie << "; Secure";
+    }
+    
+    if (httpOnly) {
+        cookie << "; HttpOnly";
+    }
+
+    bool cookie_found = false;
+    std::vector<std::string> new_cookies;
+    
+    auto range = headers.equal_range("Set-Cookie");
+    for (auto it = range.first; it != range.second; ++it) {
+        if (it->second.substr(0, key.length()) == key && 
+            it->second[key.length()] == '=') {
+            new_cookies.push_back(cookie.str());
+            cookie_found = true;
+        } else {
+            new_cookies.push_back(it->second);
+        }
+    }
+    
+    if (!cookie_found) {
+        new_cookies.push_back(cookie.str());
+    }
+    
+    headers.erase("Set-Cookie");
+    
+    for (const auto& c : new_cookies) {
+        headers.insert({"Set-Cookie", c});
+    }
+    
+    return *this;
+}
+
+Response& Response::redirect(const std::string& location, HttpStatus status) {
+    setHeader("Location", location);
+    return setStatus(status);
+}
+
+std::pair<HttpStatus, std::string> Response::sendFile(const std::string& filePath) {
     const std::string fullPath = std::string(Config::STATIC_DIR) + "/" + filePath;
     if (!std::filesystem::exists(fullPath)) {
-        return {404, "Not Found\n"};
+        return std::make_pair(HttpStatus::NOT_FOUND, "Not Found\n");
     }
 
     try {
@@ -44,15 +107,30 @@ std::pair<int, std::string> Response::sendFile(const std::string& filePath) {
         }
 
         setHeader("Content-Type", contentType);
-        return {200, ""};
+        return std::make_pair(HttpStatus::OK, "");
     } catch (const std::exception& e) {
-        return {500, "Internal Server Error: " + std::string(e.what())};
+        return std::make_pair(HttpStatus::INTERNAL_SERVER_ERROR, std::string(e.what()) + "\n");
+    }
+}
+
+std::string Response::renderTemplate(const std::string& templateName) {
+    std::string templatePath = std::string(Config::TEMPLATE_DIR) + "/" + templateName;
+    if (!std::filesystem::exists(templatePath)) {
+        throw std::runtime_error("Template not found: " + templatePath);
+    }
+
+    try {
+        body = Utils::readFile(templatePath);
+        headers["Content-Type"] = "text/html";
+        return body;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to render template: " + std::string(e.what()));
     }
 }
 
 std::string Response::toString() const {
     std::ostringstream response;
-    response << "HTTP/1.1 " << statusCode << " " << getStatusText() << "\r\n";
+    response << "HTTP/1.1 " << (int)statusCode << " " << getStatusText() << "\r\n";
     
     auto headersCopy = headers;
     if (headersCopy.find("Content-Length") == headersCopy.end()) {
@@ -74,15 +152,71 @@ std::string Response::toString() const {
 
 std::string Response::getStatusText() const {
     switch (statusCode) {
-        case 200: return "OK";
-        case 201: return "Created";
-        case 204: return "No Content";
-        case 400: return "Bad Request";
-        case 401: return "Unauthorized";
-        case 403: return "Forbidden";
-        case 404: return "Not Found";
-        case 405: return "Method Not Allowed";
-        case 500: return "Internal Server Error";
-        default: return "Unknown";
+        // 2xx Success
+        case HttpStatus::OK: return "OK";
+        case HttpStatus::CREATED: return "Created";
+        case HttpStatus::ACCEPTED: return "Accepted";
+        case HttpStatus::NON_AUTHORITATIVE_INFORMATION: return "Non-Authoritative Information";
+        case HttpStatus::NO_CONTENT: return "No Content";
+        case HttpStatus::RESET_CONTENT: return "Reset Content";
+        case HttpStatus::PARTIAL_CONTENT: return "Partial Content";
+        case HttpStatus::MULTI_STATUS: return "Multi-Status";
+        case HttpStatus::ALREADY_REPORTED: return "Already Reported";
+        case HttpStatus::IM_USED: return "IM Used";
+
+        // 3xx Redirection
+        case HttpStatus::MULTIPLE_CHOICES: return "Multiple Choices";
+        case HttpStatus::MOVED_PERMANENTLY: return "Moved Permanently";
+        case HttpStatus::FOUND: return "Found";
+        case HttpStatus::SEE_OTHER: return "See Other";
+        case HttpStatus::NOT_MODIFIED: return "Not Modified";
+        case HttpStatus::USE_PROXY: return "Use Proxy";
+        case HttpStatus::TEMPORARY_REDIRECT: return "Temporary Redirect";
+        case HttpStatus::PERMANENT_REDIRECT: return "Permanent Redirect";
+
+        // 4xx Client Error
+        case HttpStatus::BAD_REQUEST: return "Bad Request";
+        case HttpStatus::UNAUTHORIZED: return "Unauthorized";
+        case HttpStatus::PAYMENT_REQUIRED: return "Payment Required";
+        case HttpStatus::FORBIDDEN: return "Forbidden";
+        case HttpStatus::NOT_FOUND: return "Not Found";
+        case HttpStatus::METHOD_NOT_ALLOWED: return "Method Not Allowed";
+        case HttpStatus::NOT_ACCEPTABLE: return "Not Acceptable";
+        case HttpStatus::PROXY_AUTHENTICATION_REQUIRED: return "Proxy Authentication Required";
+        case HttpStatus::REQUEST_TIMEOUT: return "Request Timeout";
+        case HttpStatus::CONFLICT: return "Conflict";
+        case HttpStatus::GONE: return "Gone";
+        case HttpStatus::LENGTH_REQUIRED: return "Length Required";
+        case HttpStatus::PRECONDITION_FAILED: return "Precondition Failed";
+        case HttpStatus::PAYLOAD_TOO_LARGE: return "Payload Too Large";
+        case HttpStatus::URI_TOO_LONG: return "URI Too Long";
+        case HttpStatus::UNSUPPORTED_MEDIA_TYPE: return "Unsupported Media Type";
+        case HttpStatus::RANGE_NOT_SATISFIABLE: return "Range Not Satisfiable";
+        case HttpStatus::EXPECTATION_FAILED: return "Expectation Failed";
+        case HttpStatus::IM_A_TEAPOT: return "I'm a teapot";
+        case HttpStatus::MISDIRECTED_REQUEST: return "Misdirected Request";
+        case HttpStatus::UNPROCESSABLE_ENTITY: return "Unprocessable Entity";
+        case HttpStatus::LOCKED: return "Locked";
+        case HttpStatus::FAILED_DEPENDENCY: return "Failed Dependency";
+        case HttpStatus::TOO_EARLY: return "Too Early";
+        case HttpStatus::UPGRADE_REQUIRED: return "Upgrade Required";
+        case HttpStatus::PRECONDITION_REQUIRED: return "Precondition Required";
+        case HttpStatus::TOO_MANY_REQUESTS: return "Too Many Requests";
+        case HttpStatus::REQUEST_HEADER_FIELDS_TOO_LARGE: return "Request Header Fields Too Large";
+        case HttpStatus::UNAVAILABLE_FOR_LEGAL_REASONS: return "Unavailable For Legal Reasons";
+
+        // 5xx Server Error
+        case HttpStatus::INTERNAL_SERVER_ERROR: return "Internal Server Error";
+        case HttpStatus::NOT_IMPLEMENTED: return "Not Implemented";
+        case HttpStatus::BAD_GATEWAY: return "Bad Gateway";
+        case HttpStatus::SERVICE_UNAVAILABLE: return "Service Unavailable";
+        case HttpStatus::GATEWAY_TIMEOUT: return "Gateway Timeout";
+        case HttpStatus::HTTP_VERSION_NOT_SUPPORTED: return "HTTP Version Not Supported";
+        case HttpStatus::VARIANT_ALSO_NEGOTIATES: return "Variant Also Negotiates";
+        case HttpStatus::INSUFFICIENT_STORAGE: return "Insufficient Storage";
+        case HttpStatus::LOOP_DETECTED: return "Loop Detected";
+        case HttpStatus::NOT_EXTENDED: return "Not Extended";
+        case HttpStatus::NETWORK_AUTHENTICATION_REQUIRED: return "Network Authentication Required";
     }
+    return "Unknown";
 }

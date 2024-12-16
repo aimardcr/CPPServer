@@ -112,7 +112,7 @@ void Server::handleRequest(int connfd) {
 
     try {
         if (!ctx.req.readRequest()) {
-            ctx.res.setStatus(400);
+            ctx.res.setStatus(HttpStatus::BAD_REQUEST);
             ctx.res.setBody("Bad Request\n");
         } else {
             const auto& method = ctx.req.getMethod();
@@ -138,34 +138,34 @@ void Server::handleRequest(int connfd) {
                             if (std::holds_alternative<Response>(response)) {
                                 ctx.res = std::get<Response>(response);
                             } else if (std::holds_alternative<std::string>(response)) {
-                                ctx.res.setStatus(200);
+                                ctx.res.setStatus(HttpStatus::OK);
                                 ctx.res.setBody(std::get<std::string>(response));
-                            } else if (std::holds_alternative<std::pair<int, std::string>>(response)) {
-                                auto [status, body] = std::get<std::pair<int, std::string>>(response);
+                            } else if (std::holds_alternative<std::pair<HttpStatus, std::string>>(response)) {
+                                auto [status, body] = std::get<std::pair<HttpStatus, std::string>>(response);
                                 ctx.res.setStatus(status);
                                 ctx.res.setBody(body);
                             } else if (std::holds_alternative<json>(response)) {
                                 ctx.res.setJson(std::get<json>(response));
                                 ctx.res.setHeader("Content-Type", "application/json");
-                            } else if (std::holds_alternative<std::pair<int, json>>(response)) {
-                                auto [status, data] = std::get<std::pair<int, json>>(response);
+                            } else if (std::holds_alternative<std::pair<HttpStatus, json>>(response)) {
+                                auto [status, data] = std::get<std::pair<HttpStatus, json>>(response);
                                 ctx.res.setStatus(status);
                                 ctx.res.setJson(data);
                                 ctx.res.setHeader("Content-Type", "application/json");
                             } else {
-                                ctx.res.setStatus(500);
+                                ctx.res.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
                                 ctx.res.setBody("Internal Server Error\n");
                             }
                         } catch (const std::exception& e) {
-                            ctx.res.setStatus(500);
+                            ctx.res.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
                             ctx.res.setBody(std::string(e.what()) + "\n");
                         }
                     } else {
-                        ctx.res.setStatus(404);
+                        ctx.res.setStatus(HttpStatus::NOT_FOUND);
                         ctx.res.setBody("Not Found\n");
                     }
                 } else {
-                    ctx.res.setStatus(405);
+                    ctx.res.setStatus(HttpStatus::METHOD_NOT_ALLOWED);
                     ctx.res.setBody("Method Not Allowed\n");
                 }
             }
@@ -175,7 +175,7 @@ void Server::handleRequest(int connfd) {
     } catch (const std::exception& e) {
         try {
             Response error_response(connfd);
-            error_response.setStatus(500);
+            error_response.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
             error_response.setBody("Server error: " + std::string(e.what()) + "\n");
             sendResponse(error_response);
         } catch (...) {
