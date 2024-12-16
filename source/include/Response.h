@@ -6,6 +6,7 @@
 #include <utility>
 #include "MimeType.h"
 #include "Config.h"
+#include "HttpStatus.h"
 
 #include "json.hpp"
 using json = nlohmann::json;
@@ -15,13 +16,17 @@ public:
     explicit Response(int fd);
     ~Response() = default;
 
-    Response& setStatus(int code) { statusCode = code; return *this; }
-    Response& setHeader(const std::string& key, const std::string& value) { headers[key] = value; return *this; }
-    Response& setBody(const std::string& content) { body = content; return *this; }
-    Response& setJson(const json& data) { body = data.dump(); setHeader("Content-Type", "application/json"); return *this; }
-    std::pair<int, std::string> sendFile(const std::string& filePath);
+    Response& setStatus(HttpStatus code);
+    Response& setStatus(int code);
+    Response& setHeader(const std::string& key, const std::string& value);
+    Response& setBody(const std::string& content);
+    Response& setJson(const json& data);
+    
+    Response& setCookie(const std::string& key, const std::string& value, const std::string& path, int maxAge, bool secure, bool httpOnly);
+    Response& redirect(const std::string& location, HttpStatus status = HttpStatus::FOUND);
+
+    std::pair<HttpStatus, std::string> sendFile(const std::string& filePath);
     std::string renderTemplate(const std::string& templateName);
-    Response& redirect(const std::string& location, int status = 302);
 
     std::string toString() const;
 
@@ -29,7 +34,7 @@ public:
 
 private:
     int connfd;
-    int statusCode;
+    HttpStatus statusCode;
     std::map<std::string, std::string> headers;
     std::string body;
 
