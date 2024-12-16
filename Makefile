@@ -13,9 +13,9 @@ BIN_DIR := $(BUILD_DIR)/bin
 # Source files and corresponding object files
 SOURCES := $(SRC_DIR)/MimeType.cpp \
            $(SRC_DIR)/Utils.cpp \
-           $(SRC_DIR)/Request.cpp \
-           $(SRC_DIR)/Response.cpp \
-           $(SRC_DIR)/Server.cpp
+           $(SRC_DIR)/HttpRequest.cpp \
+           $(SRC_DIR)/HttpResponse.cpp \
+           $(SRC_DIR)/HttpServer.cpp
 OBJECTS := $(SOURCES:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 
 # Target executable and library
