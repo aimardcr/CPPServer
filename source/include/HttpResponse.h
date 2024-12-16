@@ -22,7 +22,7 @@ public:
     HttpResponse& setBody(const std::string& content);
     HttpResponse& setJson(const json& data);
     
-    HttpResponse& setCookie(const std::string& key, const std::string& value, const std::string& path, int maxAge, bool secure, bool httpOnly);
+    HttpResponse& setCookie(const std::string& key, const std::string& value, const std::string& path = "/", int maxAge = 0, bool secure = false, bool httpOnly = false);
     HttpResponse& redirect(const std::string& location, HttpStatus status = HttpStatus::FOUND);
 
     std::pair<HttpStatus, std::string> sendFile(const std::string& filePath);

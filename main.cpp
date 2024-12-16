@@ -26,6 +26,11 @@ int main() {
             return { "This is about page." };
         });
 
+        server.get("/cookie", [](HttpContext& ctx) -> Response<std::string> {
+            ctx.res.setCookie("name", "value");
+            return ctx.res.renderTemplate("cookie.html");
+        });
+
         server.run();     
     } catch (const HttpServer::ServerException& e) {
         std::cerr << "Server error: " << e.what() << std::endl;

@@ -34,7 +34,7 @@ HttpResponse& HttpResponse::setJson(const json& data) {
     return *this; 
 }
 
-HttpResponse& HttpResponse::setCookie(const std::string& key, const std::string& value, const std::string& path = "/", int maxAge = 0, bool secure = false, bool httpOnly = false) {
+HttpResponse& HttpResponse::setCookie(const std::string& key, const std::string& value, const std::string& path, int maxAge, bool secure, bool httpOnly) {
     std::ostringstream cookie;
     cookie << key << "=" << value;
     
