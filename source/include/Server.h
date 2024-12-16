@@ -13,6 +13,8 @@
 #include "json.hpp"
 using json = nlohmann::json;
 
+#include "HttpStatus.h"
+
 class Context {
 public:
     Context(int connfd) : req(connfd), res(connfd) {}
@@ -23,7 +25,7 @@ public:
 
 class Server {
 public:
-    using RouteResponse = std::variant<Response, std::string, std::pair<int, std::string>, json, std::pair<int, json>>;
+    using RouteResponse = std::variant<Response, std::string, std::pair<HttpStatus, std::string>, json, std::pair<HttpStatus, json>>;
     using RouteHandler = std::function<RouteResponse(Context&)>;
 
     class ServerException : public std::runtime_error {
