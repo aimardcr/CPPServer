@@ -133,6 +133,8 @@ private:
             ctx.res.setBody(std::to_string(response.data));
         } else if constexpr (std::is_array_v<T> && std::is_same_v<std::remove_extent_t<T>, char>) {
             ctx.res.setBody(response.data);
+        } else if constexpr (std::is_same_v<T, HttpResponse>) {
+            ctx.res = response.data;
         } else {
             ctx.res.setBody(std::to_string(response.data));
         }

@@ -31,6 +31,12 @@ int main() {
             return ctx.res.renderTemplate("cookie.html");
         });
 
+        server.get("/name", [](HttpContext& ctx) -> Response<HttpResponse> {
+            return ctx.res.setStatus(200)
+                .setHeader("Content-Type", "text/plain")
+                .setBody("John Doe");
+        });
+
         server.run();     
     } catch (const HttpServer::ServerException& e) {
         std::cerr << "Server error: " << e.what() << std::endl;
