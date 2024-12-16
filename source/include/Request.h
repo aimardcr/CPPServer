@@ -5,6 +5,8 @@
 #include "SafeMap.h"
 #include "Config.h"
 
+#include "json.hpp"
+
 class Request {
 public:
     explicit Request(int fd);
@@ -20,6 +22,9 @@ public:
     SafeMap<std::string> headers;
     SafeMap<std::string> params;
     SafeMap<std::string> forms;
+    nlohmann::json json;
+
+    SafeMap<std::string> cookies;
 
 private:
     int connfd;
@@ -28,11 +33,14 @@ private:
     std::string version;
     std::string body;
 
+    bool parseHeaders(const std::string& headerData);
     void parseQueryParams();
     void parseFormData();
-    bool setTimeout();
+    void parseJsonData();
+    void parseCookies();
+
     bool readHttpRequest();
-    bool parseHeaders(const std::string& headerData);
+    bool setTimeout();
 };
 
 #endif // REQUEST_H
