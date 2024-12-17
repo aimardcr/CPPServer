@@ -86,6 +86,22 @@ HttpResponse& HttpResponse::redirect(const std::string& location, HttpStatus sta
     return setStatus(status);
 }
 
+
+HttpResponse& HttpResponse::renderTemplate(const std::string& templateName) {
+    std::string templatePath = std::string(Config::TEMPLATE_DIR) + "/" + templateName;
+    if (!std::filesystem::exists(templatePath)) {
+        throw std::runtime_error("Template not found: " + templatePath);
+    }
+
+    try {
+        body = Utils::readFile(templatePath);
+        headers["Content-Type"] = "text/html";
+        return *this;
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to render template: " + std::string(e.what()));
+    }
+}
+
 std::pair<HttpStatus, std::string> HttpResponse::sendFile(const std::string& filePath) {
     const std::string fullPath = std::string(Config::STATIC_DIR) + "/" + filePath;
     if (!std::filesystem::exists(fullPath)) {
@@ -110,21 +126,6 @@ std::pair<HttpStatus, std::string> HttpResponse::sendFile(const std::string& fil
         return std::make_pair(HttpStatus::OK, "");
     } catch (const std::exception& e) {
         return std::make_pair(HttpStatus::INTERNAL_SERVER_ERROR, std::string(e.what()) + "\n");
-    }
-}
-
-std::string HttpResponse::renderTemplate(const std::string& templateName) {
-    std::string templatePath = std::string(Config::TEMPLATE_DIR) + "/" + templateName;
-    if (!std::filesystem::exists(templatePath)) {
-        throw std::runtime_error("Template not found: " + templatePath);
-    }
-
-    try {
-        body = Utils::readFile(templatePath);
-        headers["Content-Type"] = "text/html";
-        return body;
-    } catch (const std::exception& e) {
-        throw std::runtime_error("Failed to render template: " + std::string(e.what()));
     }
 }
 

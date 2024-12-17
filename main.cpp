@@ -15,6 +15,9 @@ int main() {
         HttpServer server("0.0.0.0", 8000);
 
         server.get("/", [](HttpContext& ctx) -> Response<std::string> {
+            if (ctx.req.params.has("name")) {
+                return Ok("Hello, " + ctx.req.params["name"] + "!");
+            }
             return { HttpStatus::OK, "Hello, world!" };
         });
 
@@ -26,7 +29,7 @@ int main() {
             return { "This is about page." };
         });
 
-        server.get("/cookie", [](HttpContext& ctx) -> Response<std::string> {
+        server.get("/cookie", [](HttpContext& ctx) -> Response<HttpResponse> {
             ctx.res.setCookie("name", "value");
             return ctx.res.renderTemplate("cookie.html");
         });
@@ -35,6 +38,47 @@ int main() {
             return ctx.res.setStatus(200)
                 .setHeader("Content-Type", "text/plain")
                 .setBody("John Doe");
+        });
+
+        server.route("/submit", [](HttpContext& ctx) -> Response<HttpResponse> {
+            if (ctx.req.method == "GET") {
+                return ctx.res.renderTemplate("submit.html");
+            }
+
+            if (ctx.req.headers.has("Content-Type")) {
+                if (ctx.req.headers["Content-Type"] == "application/json") {
+                    auto name = ctx.req.json["name"];
+                    if (name.empty()) {
+                        return ctx.res.setStatus(400)
+                            .setBody("Name is required");
+                    }
+                    auto email = ctx.req.json["email"];
+                    if (email.empty()) {
+                        return ctx.res.setStatus(400)
+                            .setBody("Email is required");
+                    }
+                    return ctx.res.setStatus(200)
+                        .setBody("Name: " + name.get<std::string>() + ", Email: " + email.get<std::string>());
+                }
+
+                if (ctx.req.headers["Content-Type"] == "application/x-www-form-urlencoded") {
+                    auto name = ctx.req.forms["name"];
+                    if (name.empty()) {
+                        return ctx.res.setStatus(400)
+                            .setBody("Name is required");
+                    }
+                    auto email = ctx.req.forms["email"];
+                    if (email.empty()) {
+                        return ctx.res.setStatus(400)
+                            .setBody("Email is required");
+                    }
+                    return ctx.res.setStatus(200)
+                        .setBody("Name: " + name + ", Email: " + email);
+                }
+            }
+
+            return ctx.res.setStatus(400)
+                .setBody("Bad Request");
         });
 
         server.run();     

@@ -24,9 +24,9 @@ public:
     
     HttpResponse& setCookie(const std::string& key, const std::string& value, const std::string& path = "/", int maxAge = 0, bool secure = false, bool httpOnly = false);
     HttpResponse& redirect(const std::string& location, HttpStatus status = HttpStatus::FOUND);
+    HttpResponse& renderTemplate(const std::string& templateName);
 
     std::pair<HttpStatus, std::string> sendFile(const std::string& filePath);
-    std::string renderTemplate(const std::string& templateName);
 
     std::string toString() const;
 

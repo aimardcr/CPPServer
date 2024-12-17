@@ -41,6 +41,41 @@ struct Response {
         : status(HttpStatus::OK), data(std::forward<U>(data)) {}
 };
 
+template <typename T>
+Response<T> Ok(T&& data) {
+    return Response<T>(HttpStatus::OK, std::forward<T>(data));
+}
+
+template <typename T>
+Response<T> Created(T&& data) {
+    return Response<T>(HttpStatus::CREATED, std::forward<T>(data));
+}
+
+template <typename T>
+Response<T> BadRequest(T&& data) {
+    return Response<T>(HttpStatus::BAD_REQUEST, std::forward<T>(data));
+}
+
+template <typename T>
+Response<T> NotFound(T&& data) {
+    return Response<T>(HttpStatus::NOT_FOUND, std::forward<T>(data));
+}
+
+template <typename T>
+Response<T> MethodNotAllowed(T&& data) {
+    return Response<T>(HttpStatus::METHOD_NOT_ALLOWED, std::forward<T>(data));
+}
+
+template <typename T>
+Response<T> InternalServerError(T&& data) {
+    return Response<T>(HttpStatus::INTERNAL_SERVER_ERROR, std::forward<T>(data));
+}
+
+template <typename T>
+Response<T> NotImplemented(T&& data) {
+    return Response<T>(HttpStatus::NOT_IMPLEMENTED, std::forward<T>(data));
+}
+
 class HttpContext {
 public:
     HttpContext(int connfd) : req(connfd), res(connfd) {}
@@ -61,6 +96,16 @@ public:
 
     explicit HttpServer(const std::string& host, int port);
     ~HttpServer();
+
+    template<typename F>
+    void route(const std::string& path, F&& handler) {
+        // TODO: find a better way, wildcard routes might have some issue in handleRequest
+        addRouteFromHandler("GET", path, std::forward<F>(handler));
+        addRouteFromHandler("POST", path, std::forward<F>(handler));
+        addRouteFromHandler("PUT", path, std::forward<F>(handler));
+        addRouteFromHandler("PATCH", path, std::forward<F>(handler));
+        addRouteFromHandler("DELETE", path, std::forward<F>(handler));
+    }
 
     template<typename F>
     void get(const std::string& path, F&& handler) {

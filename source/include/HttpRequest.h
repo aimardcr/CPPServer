@@ -14,10 +14,9 @@ public:
 
     bool readRequest();
 
-    const std::string& getMethod() const { return method; }
-    const std::string& getPath() const { return path; }
-    const std::string& getVersion() const { return version; }
-    const std::string& getBody() const { return body; }
+    std::string method;
+    std::string path;
+    std::string version;
 
     SafeMap<std::string> headers;
     SafeMap<std::string> params;
@@ -27,12 +26,9 @@ public:
     SafeMap<std::string> cookies;
 
 private:
-    int connfd;
-    std::string method;
-    std::string path;
-    std::string version;
     std::string body;
-
+    
+    int connfd;
     bool parseHeaders(const std::string& headerData);
     void parseQueryParams();
     void parseFormData();

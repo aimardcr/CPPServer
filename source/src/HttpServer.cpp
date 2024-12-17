@@ -94,10 +94,10 @@ void HttpServer::handleRequest(int connfd) {
             return;
         }
 
-        const auto& method = ctx.req.getMethod();
-        const auto& path = ctx.req.getPath();
+        const auto& method = ctx.req.method;
+        const auto& path = ctx.req.path;
 
-        std::cout << method << " " << path << " " << ctx.req.getVersion() << std::endl;
+        std::cout << method << " " << path << " " << ctx.req.version << std::endl;
 
         if (path.length() > 1024) {
             ctx.res.setStatus(HttpStatus::URI_TOO_LONG);
