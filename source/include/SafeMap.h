@@ -42,6 +42,10 @@ public:
     size_t size() const { return data.size(); }
     bool empty() const { return data.empty(); }
 
+    const std::map<std::string, T>& getMap() const {
+        return data;
+    }
+
 private:
     std::map<std::string, T> data;
 };
