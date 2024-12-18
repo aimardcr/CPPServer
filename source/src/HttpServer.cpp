@@ -1,6 +1,7 @@
 #include <iostream>
 #include <thread>
 #include <cstring>
+#include <regex>
 
 #include "Defs.h"
 #include "HttpServer.h"
@@ -138,6 +139,106 @@ void HttpServer::stop() {
     }
 }
 
+bool HttpServer::RoutePattern::match(const std::string& path, 
+                                   std::map<std::string, std::string>& out_vars) const {
+    std::smatch matches;
+    if (!std::regex_match(path, matches, regex)) {
+        return false;
+    }
+    
+    for (size_t i = 0; i < vars.size(); i++) {
+        const auto& [var_name, var_type] = vars[i];
+        std::string value = matches[i + 1].str();
+        
+        if (var_type == "int") {
+            try {
+                std::stoi(value);
+            } catch (const std::exception&) {
+                return false;
+            }
+        }
+        
+        out_vars[var_name] = value;
+    }
+    
+    return true;
+}
+
+HttpServer::RoutePattern::RoutePattern(const std::string& pattern) : pattern(pattern) {
+    std::string regex_pattern;
+    size_t pos = 0;
+    
+    while (pos < pattern.length()) {
+        if (pattern[pos] == '{') {
+            size_t end_pos = pattern.find('}', pos);
+            if (end_pos == std::string::npos) {
+                throw ServerException("Invalid pattern: unclosed parameter bracket");
+            }
+            
+            std::string param = pattern.substr(pos + 1, end_pos - pos - 1);
+            size_t colon_pos = param.find(':');
+            
+            std::string var_name;
+            std::string var_type;
+            
+            if (colon_pos != std::string::npos) {
+                var_name = param.substr(0, colon_pos);
+                var_type = param.substr(colon_pos + 1);
+            } else {
+                var_name = param;
+                var_type = "string";
+            }
+            
+            if (!std::regex_match(var_name, std::regex("^[a-zA-Z_][a-zA-Z0-9_]*$"))) {
+                throw ServerException("Invalid variable name: " + var_name);
+            }
+            
+            vars.emplace_back(var_name, var_type);
+            
+            if (var_type == "int") {
+                regex_pattern += "([0-9]+)";
+            } else if (var_type == "string") {
+                regex_pattern += "([^/]+)";
+            } else {
+                throw ServerException("Unsupported variable type: " + var_type);
+            }
+            
+            pos = end_pos + 1;
+        } else {
+            if (std::string("{}[]()^$.|*+?\\").find(pattern[pos]) != std::string::npos) {
+                regex_pattern += '\\';
+            }
+            regex_pattern += pattern[pos];
+            pos++;
+        }
+    }
+    
+    regex = std::regex("^" + regex_pattern + "$");
+}
+
+bool HttpServer::matchRoute(const std::string& method, const std::string& path, HttpContext& ctx, AnyRouteHandler& matched_handler) {
+    auto method_it = routes_.find(method);
+    if (method_it != routes_.end()) {
+        auto route_it = method_it->second.find(path);
+        if (route_it != method_it->second.end()) {
+            matched_handler = route_it->second;
+            return true;
+        }
+    }
+    
+    auto pattern_method_it = pattern_routes_.find(method);
+    if (pattern_method_it != pattern_routes_.end()) {
+        for (const auto& [pattern, handler] : pattern_method_it->second) {
+            if (pattern.match(path, ctx.path_vars.vars_)) {
+                matched_handler = handler;
+                return true;
+            }
+        }
+    }
+    
+    return false;
+}
+
 void HttpServer::handleRequest(socket_t connfd) {
     HttpContext ctx(connfd);
 
@@ -161,6 +262,7 @@ void HttpServer::handleRequest(socket_t connfd) {
             return;
         }
 
+        // Handle static files
         if (method == "GET" && path.find("/" + Config::STATIC_DIR + "/") == 0) {
             std::string file_path = path.substr(Config::STATIC_DIR.length() + 2);
             auto [status, body] = ctx.res.sendFile(file_path);
@@ -172,24 +274,21 @@ void HttpServer::handleRequest(socket_t connfd) {
             return;
         }
 
-        auto method_it = routes_.find(method);
-        if (method_it == routes_.end()) {
-            ctx.res.setStatus(HttpStatus::METHOD_NOT_ALLOWED);
-            ctx.res.setBody("Method Not Allowed\n");
-            sendResponse(ctx.res);
-            return;
-        }
-
-        auto route_it = method_it->second.find(path);
-        if (route_it == method_it->second.end()) {
-            ctx.res.setStatus(HttpStatus::NOT_FOUND);
-            ctx.res.setBody("Not Found\n");
+        AnyRouteHandler handler;
+        if (!matchRoute(method, path, ctx, handler)) {
+            if (routes_.find(method) == routes_.end()) {
+                ctx.res.setStatus(HttpStatus::METHOD_NOT_ALLOWED);
+                ctx.res.setBody("Method Not Allowed\n");
+            } else {
+                ctx.res.setStatus(HttpStatus::NOT_FOUND);
+                ctx.res.setBody("Not Found\n");
+            }
             sendResponse(ctx.res);
             return;
         }
 
         try {
-            route_it->second(ctx);
+            handler(ctx);
         } catch (const std::exception& e) {
             ctx.res.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
             ctx.res.setBody(std::string(e.what()) + "\n");
