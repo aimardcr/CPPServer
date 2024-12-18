@@ -80,6 +80,11 @@ int main() {
                 .setBody("Bad Request");
         });
 
+        server.get("/user/{id:int}", [](HttpContext& ctx) {
+            auto userId = ctx.path_vars.getInt("id");
+            return Ok("User " + std::to_string(userId));
+        });        
+
         server.run();     
     } catch (const HttpServer::ServerException& e) {
         std::cerr << "Server error: " << e.what() << std::endl;
