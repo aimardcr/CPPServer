@@ -44,8 +44,4 @@ int main() {
 Run `make` to build the project, the binary will be in the `server` directory or run `make run` to start the server immediately.
 
 # TODO
-So much but here are the few important points:
-- Fix type ambigious so we can return directly without using std::make_pair.
-- Add cookie handling functionality.
-- Add supports and functionality for common HTTP headers.
-- and the list goes on...
+So much... please kindly check the source and any contributors are welcome!
