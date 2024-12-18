@@ -1,11 +1,26 @@
 #include <vector>
 #include <sstream>
+#include <iostream>
 
 #include "Defs.h"
 #include "HttpRequest.h"
 #include "Utils.h"
 
 HttpRequest::HttpRequest(socket_t fd) : connfd(fd) {}
+
+bool HttpRequest::setTimeout() {
+    #ifdef _WIN32
+        DWORD timeout = Config::SOCKET_TIMEOUT * 1000;
+        return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, 
+                         reinterpret_cast<const char*>(&timeout), 
+                         sizeof(timeout)) != SOCKET_ERROR;
+    #else
+        struct timeval tv;
+        tv.tv_sec = Config::SOCKET_TIMEOUT;
+        tv.tv_usec = 0;
+        return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+    #endif
+}
 
 bool HttpRequest::readRequest() {
     if (!setTimeout()) return false;
@@ -232,26 +247,24 @@ bool HttpRequest::readHttpRequest() {
     std::vector<char> buffer(Config::BUFFER_SIZE);
     size_t contentLength = 0;
     bool headersComplete = false;
+    bool isChunked = false;
     
     while (request.length() < Config::MAX_REQUEST_SIZE) {
-        #ifdef _WIN32
-            int n = recv(connfd, buffer.data(), static_cast<int>(buffer.size()), 0);
-            if (n == SOCKET_ERROR) {
-                if (WSAGetLastError() == WSAEINTR) continue;
-                return false;
-            }
-        #else
-            ssize_t n = recv(connfd, buffer.data(), buffer.size(), 0);
-            if (n < 0) {
-                if (errno == EINTR) continue;
-                return false;
-            }
-        #endif
-        if (n == 0) return false;  // Connection closed by peer
-        
-        request.append(buffer.data(), n);
-        
         if (!headersComplete) {
+            int n = recv(connfd, buffer.data(), static_cast<int>(buffer.size()), 0);
+            if (n <= 0) {
+                if (n < 0) {
+                    #ifdef _WIN32
+                        if (WSAGetLastError() == WSAEINTR) continue;
+                    #else
+                        if (errno == EINTR) continue;
+                    #endif
+                }
+                return false;
+            }
+            
+            request.append(buffer.data(), n);
+            
             size_t headerEnd = request.find("\r\n\r\n");
             if (headerEnd != std::string::npos) {
                 if (!parseHeaders(request.substr(0, headerEnd))) {
@@ -259,39 +272,248 @@ bool HttpRequest::readHttpRequest() {
                 }
                 headersComplete = true;
                 
-                if (headers.has("Content-Length")) {
+                if (headers.has("Transfer-Encoding") && 
+                    headers["Transfer-Encoding"].find("chunked") != std::string::npos) {
+                    isChunked = true;
+                } else if (headers.has("Content-Length")) {
                     contentLength = std::stoul(headers["Content-Length"]);
                     if (contentLength > Config::MAX_REQUEST_SIZE) {
                         return false;
                     }
                 }
-            }
-        }
-        
-        if (headersComplete) {
-            size_t totalLength = request.find("\r\n\r\n") + 4 + contentLength;
-            if (request.length() >= totalLength) {
-                body = request.substr(request.find("\r\n\r\n") + 4);
-                parseQueryParams();
-                parseFormData();
-                parseCookies();
-                return true;
+                
+                body = request.substr(headerEnd + 4);
+                
+                if (isChunked) {
+                    std::string remaining_data = body;
+                    body.clear();
+                    
+                    size_t pos = 0;
+                    while (pos < remaining_data.length()) {
+                        size_t chunk_header_end = remaining_data.find("\r\n", pos);
+                        if (chunk_header_end == std::string::npos) break;
+                        
+                        std::string size_str = remaining_data.substr(pos, chunk_header_end - pos);
+                        size_t chunk_size;
+                        try {
+                            chunk_size = std::stoull(size_str, nullptr, 16);
+                        } catch (...) {
+                            break;
+                        }
+                        
+                        if (remaining_data.length() < chunk_header_end + 2 + chunk_size + 2) {
+                            break;
+                        }
+                        
+                        if (chunk_size > 0) {
+                            body.append(remaining_data.substr(chunk_header_end + 2, chunk_size));
+                        }
+                        
+                        pos = chunk_header_end + 2 + chunk_size + 2;
+                        
+                        if (chunk_size == 0) {
+                            return true;
+                        }
+                    }
+                    
+                    return readRemainingChunks();
+                }
+                break;
             }
         }
     }
-    return false;
+
+    parseQueryParams();
+    parseFormData();
+    parseCookies();
+    parseJsonData();
+    
+    return true;
 }
 
-bool HttpRequest::setTimeout() {
-    #ifdef _WIN32
-        DWORD timeout = Config::SOCKET_TIMEOUT * 1000;  // milliseconds
-        return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, 
-                         reinterpret_cast<const char*>(&timeout), 
-                         sizeof(timeout)) != SOCKET_ERROR;
-    #else
-        struct timeval tv;
-        tv.tv_sec = Config::SOCKET_TIMEOUT;
-        tv.tv_usec = 0;
-        return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
-    #endif
+bool HttpRequest::readChunk(std::string& chunk, size_t& chunk_size) {
+    std::vector<char> buffer(Config::BUFFER_SIZE);
+    std::string chunk_header;
+    bool header_complete = false;
+    
+    
+    while (!header_complete) {
+        int n = recv(connfd, buffer.data(), 1, 0);
+        if (n <= 0) {
+            return false;
+        }
+        
+        chunk_header += buffer[0];
+        if (chunk_header.length() >= 2 && 
+            chunk_header.substr(chunk_header.length() - 2) == "\r\n") {
+            header_complete = true;
+        }
+        
+        if (chunk_header.length() > 1024) {
+            return false;
+        }
+    }
+    
+    chunk_header = chunk_header.substr(0, chunk_header.length() - 2);
+    
+    size_t pos = chunk_header.find(';');
+    std::string size_str = (pos != std::string::npos) ? chunk_header.substr(0, pos) : chunk_header;
+    
+    try {
+        chunk_size = std::stoull(size_str, nullptr, 16);
+    } catch (const std::exception& e) {
+        return false;
+    }
+    
+    if (chunk_size > Config::MAX_REQUEST_SIZE) {
+        return false;
+    }
+    
+    if (chunk_size == 0) {
+        char crlf[2];
+        if (recv(connfd, crlf, 2, 0) != 2 || crlf[0] != '\r' || crlf[1] != '\n') {
+            return false;
+        }
+        return true;
+    }
+    
+    size_t total_read = 0;
+    std::vector<char> chunk_buffer(chunk_size);
+    
+    while (total_read < chunk_size) {
+        int to_read = static_cast<int>(chunk_size - total_read);
+        int n = recv(connfd, chunk_buffer.data() + total_read, to_read, 0);
+        
+        if (n <= 0) {
+            return false;
+        }
+        
+        total_read += n;
+    }
+    
+    chunk.append(chunk_buffer.data(), chunk_size);
+    
+    char crlf[2];
+    if (recv(connfd, crlf, 2, 0) != 2 || crlf[0] != '\r' || crlf[1] != '\n') {
+        return false;
+    }
+    
+    return true;
+}
+
+std::string HttpRequest::readLine() {
+    std::string line;
+    char c;
+    
+    while (true) {
+        int n = recv(connfd, &c, 1, 0);
+        if (n <= 0) {
+            if (n < 0) {
+                #ifdef _WIN32
+                    if (WSAGetLastError() == WSAEINTR) continue;
+                #else
+                    if (errno == EINTR) continue;
+                #endif
+            }
+            break;
+        }
+        
+        line += c;
+        if (line.length() >= 2 && line.substr(line.length() - 2) == "\r\n") {
+            break;
+        }
+    }
+    
+    return line;
+}
+
+bool HttpRequest::parseChunkSize(const std::string& line, size_t& size) {
+    std::string size_str = line.substr(0, line.find_first_of(" \t\r\n;"));
+    try {
+        size = std::stoull(size_str, nullptr, 16);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+
+bool HttpRequest::readChunkedBody(std::string& request) {
+    std::string chunked_body;
+    size_t chunk_size;
+    
+    while (true) {
+        if (!readChunk(chunked_body, chunk_size)) {
+            return false;
+        }
+
+        if (chunk_size == 0) {
+            break;
+        }
+
+        if (chunked_body.length() > Config::MAX_REQUEST_SIZE) {
+            return false;
+        }
+    }
+
+    request = chunked_body;
+    return true;
+}
+
+bool HttpRequest::readRemainingChunks() {
+    std::vector<char> buffer(Config::BUFFER_SIZE);
+    std::string chunk_size_str;
+    size_t total_size = body.length();
+    
+    while (true) {
+        chunk_size_str.clear();
+        while (true) {
+            int n = recv(connfd, buffer.data(), 1, 0);
+            if (n <= 0) return false;
+            
+            chunk_size_str += buffer[0];
+            if (chunk_size_str.length() >= 2 && 
+                chunk_size_str.substr(chunk_size_str.length() - 2) == "\r\n") {
+                chunk_size_str = chunk_size_str.substr(0, chunk_size_str.length() - 2);
+                break;
+            }
+        }
+        
+        size_t chunk_size;
+        try {
+            chunk_size = std::stoull(chunk_size_str, nullptr, 16);
+        } catch (...) {
+            return false;
+        }
+        
+        if (chunk_size == 0) {
+            char crlf[2];
+            if (recv(connfd, crlf, 2, 0) != 2) return false;
+            return true;
+        }
+        
+        size_t bytes_read = 0;
+        while (bytes_read < chunk_size) {
+            int to_read = static_cast<int>(min(
+                chunk_size - bytes_read,
+                static_cast<size_t>(Config::BUFFER_SIZE)
+            ));
+            
+            int n = recv(connfd, buffer.data(), to_read, 0);
+            if (n <= 0) return false;
+            
+            body.append(buffer.data(), n);
+            bytes_read += n;
+        }
+        
+        char crlf[2];
+        if (recv(connfd, crlf, 2, 0) != 2) return false;
+        
+        total_size += chunk_size;
+        if (total_size > Config::MAX_REQUEST_SIZE) {
+            return false;
+        }
+    }
+    
+    return true;
 }
