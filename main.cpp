@@ -80,9 +80,15 @@ int main() {
                 .setBody("Bad Request");
         });
 
-        server.get("/user/{id:int}", [](HttpContext& ctx) {
+        server.get("/user/{id:int}", [](HttpContext& ctx) -> Response<std::string> {
             auto userId = ctx.path_vars.getInt("id");
             return Ok("User " + std::to_string(userId));
+        });        
+
+        server.post("/chunked-test", [](HttpContext& ctx) -> Response<std::string> {
+            std::cout << "Received chunked request body:\n" << ctx.req.getBody() << std::endl;
+            
+            return Ok(std::string("Successfully received chunked data"));
         });        
 
         server.run();     
