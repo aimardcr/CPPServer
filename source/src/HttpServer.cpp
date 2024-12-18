@@ -68,7 +68,7 @@ std::string HttpServer::getLastError() {
     
     if (s) {
         int size_needed = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
-        std::string result(size_needed - 1, '\0'); // -1 because size_needed includes null terminator
+        std::string result(size_needed - 1, '\0');
         WideCharToMultiByte(CP_UTF8, 0, s, -1, &result[0], size_needed, NULL, NULL);
         LocalFree(s);
         return result;
@@ -120,7 +120,7 @@ void HttpServer::run() {
         
         if (connfd != INVALID_SOCK) {
             std::thread([this, connfd]() {
-                handleRequest(connfd);
+                handleConnection(connfd);
                 closeSocket(connfd);
             }).detach();
         }
@@ -239,9 +239,13 @@ bool HttpServer::matchRoute(const std::string& method, const std::string& path, 
     return false;
 }
 
-void HttpServer::handleRequest(socket_t connfd) {
-    HttpContext ctx(connfd);
+void HttpServer::handleConnection(socket_t connfd) {
+    if (Config::KEEP_ALIVE_ENABLED) {
+        handleKeepAliveConnection(connfd);
+        return;
+    }
 
+    HttpContext ctx(connfd);
     try {
         if (!ctx.req.readRequest()) {
             ctx.res.setStatus(HttpStatus::BAD_REQUEST);
@@ -262,7 +266,6 @@ void HttpServer::handleRequest(socket_t connfd) {
             return;
         }
 
-        // Handle static files
         if (method == "GET" && path.find("/" + Config::STATIC_DIR + "/") == 0) {
             std::string file_path = path.substr(Config::STATIC_DIR.length() + 2);
             auto [status, body] = ctx.res.sendFile(file_path);
@@ -274,12 +277,13 @@ void HttpServer::handleRequest(socket_t connfd) {
             return;
         }
 
-        // Handle health check
-        if (method == "GET" && path == "/health") {
-            ctx.res.setStatus(HttpStatus::OK);
-            ctx.res.setBody("OK\n");
-            sendResponse(ctx.res);
-            return;
+        if (Config::HEALTH_CHECK_ENABLED) {
+            if (method == "GET" && path == "/health") {
+                ctx.res.setStatus(HttpStatus::OK);
+                ctx.res.setBody("OK\n");
+                sendResponse(ctx.res);
+                return;
+            }
         }
 
         AnyRouteHandler handler;
@@ -316,6 +320,99 @@ void HttpServer::handleRequest(socket_t connfd) {
     }
 }
 
+void HttpServer::handleKeepAliveConnection(socket_t connfd) {
+    int request_count = 0;
+    time_t last_activity = time(nullptr);
+
+    while (running_) {
+        time_t current_time = time(nullptr);
+        if (current_time - last_activity > Config::KEEP_ALIVE_TIMEOUT) {
+            break;
+        }
+
+        if (request_count >= Config::MAX_KEEP_ALIVE_REQUESTS) {
+            break;
+        }
+
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(connfd, &read_fds);
+
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+
+        int ready = select(connfd + 1, &read_fds, NULL, NULL, &timeout);
+
+        if (ready < 0) {
+            break;
+        } else if (ready == 0) {
+            continue;
+        }
+
+        HttpContext ctx(connfd);
+
+        try {
+            if (!ctx.req.readRequest()) {
+                break;
+            }
+
+            last_activity = time(nullptr);
+
+            const auto& method = ctx.req.method;
+            const auto& path = ctx.req.path;
+
+            std::cout << method << " " << path << " " << ctx.req.version << std::endl;
+
+            AnyRouteHandler handler;
+            if (!matchRoute(method, path, ctx, handler)) {
+                if (routes_.find(method) == routes_.end()) {
+                    ctx.res.setStatus(HttpStatus::METHOD_NOT_ALLOWED);
+                    ctx.res.setBody("Method Not Allowed\n");
+                } else {
+                    ctx.res.setStatus(HttpStatus::NOT_FOUND);
+                    ctx.res.setBody("Not Found\n");
+                }
+                sendResponse(ctx.res);
+                
+                request_count++;
+                
+                if (ctx.req.headers.get("Connection", "") != "keep-alive") {
+                    break;
+                }
+                continue;
+            }
+
+            try {
+                handler(ctx);
+            } catch (const std::exception& e) {
+                ctx.res.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
+                ctx.res.setBody(std::string(e.what()) + "\n");
+            }
+
+            sendResponse(ctx.res);
+
+            request_count++;
+
+            if (ctx.req.headers.get("Connection", "") != "keep-alive") {
+                break;
+            }
+        } catch (const std::exception& e) {
+            try {
+                HttpResponse error_response(connfd, ctx.req);
+                error_response.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
+                error_response.setBody("Server error: " + std::string(e.what()) + "\n");
+                sendResponse(error_response);
+            } catch (const std::exception& e2) {
+                std::cerr << "Failed to send error response: " << e2.what() << std::endl;
+            }
+            break;
+        }
+    }
+
+    closeSocket(connfd);
+}
+
 void HttpServer::sendResponse(HttpResponse& response) {
     std::string response_str = response.toString();
     size_t total_sent = 0;
@@ -348,7 +445,6 @@ void HttpServer::setupServer() {
         throw ServerException("Failed to create socket: " + getLastError());
     }
 
-    // Set socket options
 #ifdef _WIN32
     char yes = 1;
 #else
@@ -360,14 +456,12 @@ void HttpServer::setupServer() {
     }
 
 #ifdef _WIN32
-    // Set socket to non-blocking mode on Windows
     unsigned long mode = 1;
     if (ioctlsocket(sockfd_, FIONBIO, &mode) != 0) {
         closeSocket(sockfd_);
         throw ServerException("Failed to set non-blocking mode: " + getLastError());
     }
 #else
-    // Set socket to non-blocking mode on Unix
     int flags = fcntl(sockfd_, F_GETFL, 0);
     if (flags == -1) {
         closeSocket(sockfd_);

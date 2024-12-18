@@ -228,7 +228,8 @@ private:
     static void closeSocket(socket_t sock);
     static std::string getLastError();
     
-    void handleRequest(socket_t connfd);
+    void handleConnection(socket_t connfd);
+    void handleKeepAliveConnection(socket_t connfd);
     void sendResponse(HttpResponse& response);
     void setupServer();
     void cleanup();

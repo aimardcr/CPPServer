@@ -12,16 +12,6 @@ extern const MimeType MIME_TYPES[];
 // HttpResponse::HttpResponse(int fd) : connfd(fd), statusCode(HttpStatus::OK) {}
 HttpResponse::HttpResponse(socket_t fd, HttpRequest& req) : connfd(fd), req(req), statusCode(HttpStatus::OK) {
     headers["Server"] = "CPPServer/1.1";
-    headers["Connection"] = "keep-alive";
-    headers["Content-Type"] = "text/plain";
-    // headers["Date"] = Utils::getHttpDate();
-    headers["Access-Control-Allow-Origin"] = "*";
-    headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
-    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
-    headers["Access-Control-Max-Age"] = "86400";
-    headers["Access-Control-Allow-Credentials"] = "true";
-    headers["Access-Control-Expose-Headers"] = "Authorization";
-    headers["Vary"] = "Origin, Access-Control-Request-Method, Access-Control-Request-Headers";
 }
 
 HttpResponse& HttpResponse::setStatus(HttpStatus code) { 
@@ -156,12 +146,22 @@ std::string HttpResponse::toString() {
         headersCopy["Content-Length"] = std::to_string(body.length());
     }
 
+    if (req.headers.get("Connection", "") == "keep-alive") {
+        headersCopy["Connection"] = "keep-alive";
+        headersCopy["Keep-Alive"] = "timeout=" + 
+            std::to_string(Config::KEEP_ALIVE_TIMEOUT) + 
+            ", max=" + std::to_string(Config::MAX_KEEP_ALIVE_REQUESTS);
+    } else {
+        headersCopy["Connection"] = "close";
+    }
+
     for (const auto& [key, value] : headersCopy) {
         response << key << ": " << value << "\r\n";
     }
     response << "\r\n" << body;
     return response.str();
 }
+
 
 std::string HttpResponse::getStatusText() const {
     switch (statusCode) {
