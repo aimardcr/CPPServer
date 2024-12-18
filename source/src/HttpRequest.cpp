@@ -60,13 +60,149 @@ void HttpRequest::parseQueryParams() {
 }
 
 void HttpRequest::parseFormData() {
-    if (headers.has("Content-Type") && 
-        headers["Content-Type"] == "application/x-www-form-urlencoded" && 
-        !body.empty()) {
+    if (!headers.has("Content-Type")) {
+        return;
+    }
+
+    const auto& contentType = headers["Content-Type"];
+    if (contentType.find("multipart/form-data") == 0) {
+        parseMultipartData();
+    } else if (contentType == "application/x-www-form-urlencoded" && !body.empty()) {
         auto parsed = Utils::parseUrlEncoded(body);
         for (const auto& [key, value] : parsed) {
             forms[key] = value;
         }
+    }
+}
+
+std::string HttpRequest::getBoundary() const {
+    const auto& contentType = headers["Content-Type"];
+    size_t boundaryPos = contentType.find("boundary=");
+    if (boundaryPos == std::string::npos) {
+        return "";
+    }
+    
+    return contentType.substr(boundaryPos + 9);
+}
+
+std::vector<HttpRequest::MultipartPart> HttpRequest::splitMultipartData() const {
+    std::vector<MultipartPart> parts;
+    std::string boundary = getBoundary();
+    if (boundary.empty() || body.empty()) {
+        return parts;
+    }
+
+    std::string boundaryStart = "--" + boundary + "\r\n";
+    std::string boundaryMiddle = "\r\n--" + boundary + "\r\n";
+    std::string boundaryEnd = "\r\n--" + boundary + "--\r\n";
+
+    size_t pos = body.find(boundaryStart);
+    if (pos != 0) {
+        return parts;
+    }
+
+    pos += boundaryStart.length();
+    while (pos < body.length()) {
+        MultipartPart part;
+        
+        size_t headersEnd = body.find("\r\n\r\n", pos);
+        if (headersEnd == std::string::npos) break;
+
+        std::istringstream headerStream(body.substr(pos, headersEnd - pos));
+        std::string headerLine;
+        while (std::getline(headerStream, headerLine) && !headerLine.empty()) {
+            if (headerLine.back() == '\r') headerLine.pop_back();
+            
+            size_t colonPos = headerLine.find(':');
+            if (colonPos != std::string::npos) {
+                std::string key = Utils::trim(headerLine.substr(0, colonPos));
+                std::string value = Utils::trim(headerLine.substr(colonPos + 1));
+                part.headers[key] = value;
+            }
+        }
+
+        pos = headersEnd + 4;
+        size_t nextBoundary = body.find("\r\n--" + boundary, pos);
+        if (nextBoundary == std::string::npos) break;
+
+        part.data = std::vector<char>(
+            body.begin() + pos,
+            body.begin() + nextBoundary
+        );
+
+        parts.push_back(std::move(part));
+
+        pos = nextBoundary + 2 + boundary.length() + 2;
+        if (body.substr(nextBoundary, boundaryEnd.length()) == boundaryEnd) {
+            break;
+        }
+    }
+
+    return parts;
+}
+
+SafeMap<std::string> HttpRequest::parseContentDisposition(const std::string& header) const {
+    SafeMap<std::string> result;
+    std::istringstream stream(header);
+    std::string item;
+    
+    stream >> item;
+    if (item == "Content-Disposition:") {
+        stream >> result["disposition"];
+    }
+    
+    while (stream >> item) {
+        if (item.back() == ';') {
+            item.pop_back();
+        }
+        
+        size_t equalPos = item.find('=');
+        if (equalPos != std::string::npos) {
+            std::string key = item.substr(0, equalPos);
+            std::string value = item.substr(equalPos + 1);
+            
+            if (value.length() >= 2 && value.front() == '"' && value.back() == '"') {
+                value = value.substr(1, value.length() - 2);
+            }
+            
+            result[key] = value;
+        }
+    }
+    
+    return result;
+}
+
+void HttpRequest::processMultipartPart(const MultipartPart& part) {
+    if (!part.headers.has("Content-Disposition")) {
+        return;
+    }
+
+    auto disposition = parseContentDisposition(part.headers["Content-Disposition"]);
+    if (!disposition.has("name")) {
+        return;
+    }
+
+    std::string name = disposition["name"];
+
+    if (disposition.has("filename")) {
+        std::string filename = disposition["filename"];
+        std::string contentType = part.headers.get("Content-Type", "application/octet-stream");
+        
+        files[name] = UploadedFile(
+            name,
+            filename,
+            contentType,
+            std::vector<char>(part.data)
+        );
+    } else {
+        forms[name] = std::string(part.data.begin(), part.data.end());
+    }
+}
+
+void HttpRequest::parseMultipartData() {
+    auto parts = splitMultipartData();
+    for (const auto& part : parts) {
+        processMultipartPart(part);
     }
 }
 
