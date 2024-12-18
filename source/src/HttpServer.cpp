@@ -274,6 +274,14 @@ void HttpServer::handleRequest(socket_t connfd) {
             return;
         }
 
+        // Handle health check
+        if (method == "GET" && path == "/health") {
+            ctx.res.setStatus(HttpStatus::OK);
+            ctx.res.setBody("OK\n");
+            sendResponse(ctx.res);
+            return;
+        }
+
         AnyRouteHandler handler;
         if (!matchRoute(method, path, ctx, handler)) {
             if (routes_.find(method) == routes_.end()) {

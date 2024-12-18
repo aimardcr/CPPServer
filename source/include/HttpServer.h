@@ -44,20 +44,23 @@ struct Response {
         : status(HttpStatus::OK), data(std::forward<U>(data)) {}
 };
 
-template <typename T>
-Response<T> Ok(T&& data) { return Response<T>(HttpStatus::OK, std::forward<T>(data)); }
-template <typename T>
-Response<T> Created(T&& data) { return Response<T>(HttpStatus::CREATED, std::forward<T>(data)); }
-template <typename T>
-Response<T> BadRequest(T&& data) { return Response<T>(HttpStatus::BAD_REQUEST, std::forward<T>(data)); }
-template <typename T>
-Response<T> NotFound(T&& data) { return Response<T>(HttpStatus::NOT_FOUND, std::forward<T>(data)); }
-template <typename T>
-Response<T> MethodNotAllowed(T&& data) { return Response<T>(HttpStatus::METHOD_NOT_ALLOWED, std::forward<T>(data)); }
-template <typename T>
-Response<T> InternalServerError(T&& data) { return Response<T>(HttpStatus::INTERNAL_SERVER_ERROR, std::forward<T>(data)); }
-template <typename T>
-Response<T> NotImplemented(T&& data) { return Response<T>(HttpStatus::NOT_IMPLEMENTED, std::forward<T>(data)); }
+#define CreateResponseHelper(name, status) \
+template <typename T> \
+Response<std::string> name(T&& data) { \
+    if constexpr (std::is_convertible_v<T, std::string>) { \
+        return Response<std::string>(status, std::forward<T>(data)); \
+    } else { \
+        return Response<std::string>(status, std::to_string(std::forward<T>(data))); \
+    } \
+}
+
+CreateResponseHelper(Ok, HttpStatus::OK)
+CreateResponseHelper(Created, HttpStatus::CREATED)
+CreateResponseHelper(BadRequest, HttpStatus::BAD_REQUEST)
+CreateResponseHelper(NotFound, HttpStatus::NOT_FOUND)
+CreateResponseHelper(MethodNotAllowed, HttpStatus::METHOD_NOT_ALLOWED)
+CreateResponseHelper(InternalServerError, HttpStatus::INTERNAL_SERVER_ERROR)
+CreateResponseHelper(NotImplemented, HttpStatus::NOT_IMPLEMENTED)
 
 class PathVars {
 public:

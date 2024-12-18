@@ -494,10 +494,18 @@ bool HttpRequest::readRemainingChunks() {
         
         size_t bytes_read = 0;
         while (bytes_read < chunk_size) {
+
+#ifdef _WIN32
             int to_read = static_cast<int>(min(
                 chunk_size - bytes_read,
                 static_cast<size_t>(Config::BUFFER_SIZE)
             ));
+#else
+            int to_read = static_cast<int>(std::min(
+                chunk_size - bytes_read,
+                static_cast<size_t>(Config::BUFFER_SIZE)
+            ));
+#endif
             
             int n = recv(connfd, buffer.data(), to_read, 0);
             if (n <= 0) return false;
