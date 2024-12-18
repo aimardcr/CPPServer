@@ -28,6 +28,7 @@ public:
     nlohmann::json json;
     SafeMap<std::string> cookies;
 
+    std::string getBody() const { return body; }
 private:
     std::string body;
     
@@ -50,7 +51,13 @@ private:
     SafeMap<std::string> parseContentDisposition(const std::string& header) const;
 
     bool readHttpRequest();
+    bool readChunkedBody(std::string& request);
     bool setTimeout();
+
+    bool readChunk(std::string& chunk, size_t& chunk_size);
+    std::string readLine();
+    bool parseChunkSize(const std::string& line, size_t& size);
+    bool readRemainingChunks();
 };
 
 #endif // HTTP_REQUEST_H
