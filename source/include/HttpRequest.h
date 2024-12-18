@@ -6,6 +6,7 @@
 #include "Defs.h"
 #include "SafeMap.h"
 #include "Config.h"
+#include "UploadedFile.h"
 
 #include "json.hpp"
 
@@ -23,8 +24,8 @@ public:
     SafeMap<std::string> headers;
     SafeMap<std::string> params;
     SafeMap<std::string> forms;
+    SafeMap<UploadedFile> files;
     nlohmann::json json;
-
     SafeMap<std::string> cookies;
 
 private:
@@ -36,6 +37,17 @@ private:
     void parseFormData();
     void parseJsonData();
     void parseCookies();
+    void parseMultipartData();
+
+    struct MultipartPart {
+        SafeMap<std::string> headers;
+        std::vector<char> data;
+    };
+
+    std::string getBoundary() const;
+    std::vector<MultipartPart> splitMultipartData() const;
+    void processMultipartPart(const MultipartPart& part);
+    SafeMap<std::string> parseContentDisposition(const std::string& header) const;
 
     bool readHttpRequest();
     bool setTimeout();
