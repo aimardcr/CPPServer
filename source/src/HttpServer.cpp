@@ -1,21 +1,24 @@
-#include "HttpServer.h"
 #include <iostream>
-#include <cstring>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 #include <thread>
+#include <cstring>
 
-#include "json.hpp"
-using json = nlohmann::json;
+#include "Defs.h"
+#include "HttpServer.h"
 
-HttpServer::HttpServer(const std::string& host = "0.0.0.0", int port = 8000) 
-    : host_(host), port_(port), sockfd_(-1), running_(false) {
+HttpServer::HttpServer(const std::string& host, int port) 
+    : host_(host), port_(port), sockfd_(INVALID_SOCK), running_(false) {
+#ifdef _WIN32
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        throw ServerException("WSAStartup failed");
+    }
+#endif
 }
 
 HttpServer::~HttpServer() {
     stop();
+#ifdef _WIN32
+    WSACleanup();
+#endif
 }
 
 bool HttpServer::isRunning() const { 
@@ -43,6 +46,38 @@ void HttpServer::setPort(int port) {
     port_ = port;
 }
 
+void HttpServer::closeSocket(socket_t sock) {
+    if (sock != INVALID_SOCK) {
+#ifdef _WIN32
+        closesocket(sock);
+#else
+        close(sock);
+#endif
+    }
+}
+
+std::string HttpServer::getLastError() {
+#ifdef _WIN32
+    wchar_t* s = NULL;
+    DWORD error = WSAGetLastError();
+    FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, 
+                  NULL, error,
+                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                  (LPWSTR)&s, 0, NULL);
+    
+    if (s) {
+        int size_needed = WideCharToMultiByte(CP_UTF8, 0, s, -1, NULL, 0, NULL, NULL);
+        std::string result(size_needed - 1, '\0'); // -1 because size_needed includes null terminator
+        WideCharToMultiByte(CP_UTF8, 0, s, -1, &result[0], size_needed, NULL, NULL);
+        LocalFree(s);
+        return result;
+    }
+    return "Unknown error";
+#else
+    return std::string(strerror(errno));
+#endif
+}
+
 void HttpServer::run() {
     if (running_) throw ServerException("Server is already running");
     
@@ -55,19 +90,39 @@ void HttpServer::run() {
         struct sockaddr_in client_addr;
         socklen_t client_addr_len = sizeof(client_addr);
         
-        int connfd = accept(sockfd_, (struct sockaddr*)&client_addr, &client_addr_len);
-        if (connfd == -1) {
-            if (errno == EINTR) continue;
-            if (running_) {
-                perror("accept");
+        socket_t connfd;
+        do {
+            connfd = accept(sockfd_, (struct sockaddr*)&client_addr, &client_addr_len);
+            
+            if (connfd == INVALID_SOCK) {
+                #ifdef _WIN32
+                    int error = WSAGetLastError();
+                    if (error == WSAEWOULDBLOCK || error == WSAEINTR) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        continue;
+                    }
+                #else
+                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                        continue;
+                    }
+                #endif
+                
+                if (running_) {
+                    perror("accept");
+                }
+                break;
             }
-            break;
-        }
+        } while (connfd == INVALID_SOCK && running_);
 
-        std::thread([this, connfd]() {
-            handleRequest(connfd);
-            close(connfd);
-        }).detach();
+        if (!running_) break;
+        
+        if (connfd != INVALID_SOCK) {
+            std::thread([this, connfd]() {
+                handleRequest(connfd);
+                closeSocket(connfd);
+            }).detach();
+        }
     }
 
     cleanup();
@@ -76,14 +131,14 @@ void HttpServer::run() {
 void HttpServer::stop() {
     if (running_) {
         running_ = false;
-        if (sockfd_ != -1) {
-            close(sockfd_);
-            sockfd_ = -1;
+        if (sockfd_ != INVALID_SOCK) {
+            closeSocket(sockfd_);
+            sockfd_ = INVALID_SOCK;
         }
     }
 }
 
-void HttpServer::handleRequest(int connfd) {
+void HttpServer::handleRequest(socket_t connfd) {
     HttpContext ctx(connfd);
 
     try {
@@ -144,7 +199,7 @@ void HttpServer::handleRequest(int connfd) {
 
     } catch (const std::exception& e) {
         try {
-            HttpResponse error_response(connfd);
+            HttpResponse error_response(connfd, ctx.req);
             error_response.setStatus(HttpStatus::INTERNAL_SERVER_ERROR);
             error_response.setBody("Server error: " + std::string(e.what()) + "\n");
             sendResponse(error_response);
@@ -154,21 +209,25 @@ void HttpServer::handleRequest(int connfd) {
     }
 }
 
-void HttpServer::sendResponse(const HttpResponse& response) {
+void HttpServer::sendResponse(HttpResponse& response) {
     std::string response_str = response.toString();
-    ssize_t total_sent = 0;
+    size_t total_sent = 0;
     const char* data = response_str.c_str();
     size_t remaining = response_str.length();
 
-    while (total_sent < static_cast<ssize_t>(response_str.length())) {
-        ssize_t sent = send(response.getConnfd(), 
-                            data + total_sent, 
-                            remaining, 
-                            0);
+    while (total_sent < response_str.length()) {
+        int sent = send(response.getConnfd(), 
+                       data + total_sent, 
+                       static_cast<int>(remaining), 
+                       0);
         
-        if (sent == -1) {
+        if (sent == SOCKET_ERROR) {
+#ifdef _WIN32
+            if (WSAGetLastError() == WSAEINTR) continue;
+#else
             if (errno == EINTR) continue;
-            throw ServerException("Failed to send response: " + std::string(strerror(errno)));
+#endif
+            throw ServerException("Failed to send response: " + getLastError());
         }
 
         total_sent += sent;
@@ -178,42 +237,78 @@ void HttpServer::sendResponse(const HttpResponse& response) {
 
 void HttpServer::setupServer() {
     sockfd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd_ == -1) {
-        throw ServerException("Failed to create socket: " + std::string(strerror(errno)));
+    if (sockfd_ == INVALID_SOCK) {
+        throw ServerException("Failed to create socket: " + getLastError());
     }
 
+    // Set socket options
+#ifdef _WIN32
+    char yes = 1;
+#else
     int yes = 1;
-    if (setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
-        close(sockfd_);
-        throw ServerException("Failed to set socket options: " + std::string(strerror(errno)));
+#endif
+    if (setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == SOCKET_ERROR) {
+        closeSocket(sockfd_);
+        throw ServerException("Failed to set socket options: " + getLastError());
     }
+
+#ifdef _WIN32
+    // Set socket to non-blocking mode on Windows
+    unsigned long mode = 1;
+    if (ioctlsocket(sockfd_, FIONBIO, &mode) != 0) {
+        closeSocket(sockfd_);
+        throw ServerException("Failed to set non-blocking mode: " + getLastError());
+    }
+#else
+    // Set socket to non-blocking mode on Unix
+    int flags = fcntl(sockfd_, F_GETFL, 0);
+    if (flags == -1) {
+        closeSocket(sockfd_);
+        throw ServerException("Failed to get socket flags: " + getLastError());
+    }
+    if (fcntl(sockfd_, F_SETFL, flags | O_NONBLOCK) == -1) {
+        closeSocket(sockfd_);
+        throw ServerException("Failed to set non-blocking mode: " + getLastError());
+    }
+#endif
 
     struct sockaddr_in addr;
     std::memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(port_);
+    addr.sin_port = htons(static_cast<unsigned short>(port_));
     
     if (host_ == "0.0.0.0") {
         addr.sin_addr.s_addr = INADDR_ANY;
     } else {
-        inet_pton(AF_INET, host_.c_str(), &addr.sin_addr);
+#ifdef _WIN32
+        addr.sin_addr.s_addr = inet_addr(host_.c_str());
+        if (addr.sin_addr.s_addr == INADDR_NONE) {
+            closeSocket(sockfd_);
+            throw ServerException("Invalid address: " + host_);
+        }
+#else
+        if (inet_pton(AF_INET, host_.c_str(), &addr.sin_addr) <= 0) {
+            closeSocket(sockfd_);
+            throw ServerException("Invalid address: " + host_);
+        }
+#endif
     }
 
-    if (bind(sockfd_, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-        close(sockfd_);
-        throw ServerException("Failed to bind socket: " + std::string(strerror(errno)));
+    if (bind(sockfd_, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+        closeSocket(sockfd_);
+        throw ServerException("Failed to bind socket: " + getLastError());
     }
 
-    if (listen(sockfd_, SOMAXCONN) == -1) {
-        close(sockfd_);
-        throw ServerException("Failed to listen on socket: " + std::string(strerror(errno)));
+    if (listen(sockfd_, SOMAXCONN) == SOCKET_ERROR) {
+        closeSocket(sockfd_);
+        throw ServerException("Failed to listen on socket: " + getLastError());
     }
 }
 
 void HttpServer::cleanup() {
-    if (sockfd_ != -1) {
-        close(sockfd_);
-        sockfd_ = -1;
+    if (sockfd_ != INVALID_SOCK) {
+        closeSocket(sockfd_);
+        sockfd_ = INVALID_SOCK;
     }
     running_ = false;
 }

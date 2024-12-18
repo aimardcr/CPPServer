@@ -2,6 +2,8 @@
 #define HTTP_REQUEST_H
 
 #include <string>
+
+#include "Defs.h"
 #include "SafeMap.h"
 #include "Config.h"
 
@@ -9,7 +11,7 @@
 
 class HttpRequest {
 public:
-    explicit HttpRequest(int fd);
+    explicit HttpRequest(socket_t fd);
     ~HttpRequest() = default;
 
     bool readRequest();

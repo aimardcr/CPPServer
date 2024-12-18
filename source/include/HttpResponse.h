@@ -4,16 +4,19 @@
 #include <string>
 #include <map>
 #include <utility>
+
+#include "Defs.h"
 #include "MimeType.h"
 #include "Config.h"
 #include "HttpStatus.h"
+#include "HttpRequest.h"
 
 #include "json.hpp"
 using json = nlohmann::json;
 
 class HttpResponse {
 public:
-    explicit HttpResponse(int fd);
+    explicit HttpResponse(socket_t fd, HttpRequest& req);
     ~HttpResponse() = default;
 
     HttpResponse& setStatus(HttpStatus code);
@@ -28,17 +31,23 @@ public:
 
     std::pair<HttpStatus, std::string> sendFile(const std::string& filePath);
 
-    std::string toString() const;
+    std::string toString();
 
-    int getConnfd() const { return connfd; }
+    socket_t getConnfd() const { return connfd; }
 
 private:
-    int connfd;
+    socket_t connfd;
+    HttpRequest req;
+
     HttpStatus statusCode;
     std::map<std::string, std::string> headers;
     std::string body;
 
     std::string getStatusText() const;
+
+    bool shouldCompress(const std::string& contentTypes) const;
+    std::string compressGzip(const std::string& content) const;
+    void prepareResponse();
 };
 
 #endif // HTTP_RESPONSE_H

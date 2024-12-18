@@ -1,10 +1,11 @@
-#include "HttpRequest.h"
-#include "Utils.h"
 #include <vector>
 #include <sstream>
-#include <sys/socket.h>
 
-HttpRequest::HttpRequest(int fd) : connfd(fd) {}
+#include "Defs.h"
+#include "HttpRequest.h"
+#include "Utils.h"
+
+HttpRequest::HttpRequest(socket_t fd) : connfd(fd) {}
 
 bool HttpRequest::readRequest() {
     if (!setTimeout()) return false;
@@ -97,8 +98,20 @@ bool HttpRequest::readHttpRequest() {
     bool headersComplete = false;
     
     while (request.length() < Config::MAX_REQUEST_SIZE) {
-        ssize_t n = recv(connfd, buffer.data(), buffer.size(), 0);
-        if (n <= 0) return false;
+        #ifdef _WIN32
+            int n = recv(connfd, buffer.data(), static_cast<int>(buffer.size()), 0);
+            if (n == SOCKET_ERROR) {
+                if (WSAGetLastError() == WSAEINTR) continue;
+                return false;
+            }
+        #else
+            ssize_t n = recv(connfd, buffer.data(), buffer.size(), 0);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return false;
+            }
+        #endif
+        if (n == 0) return false;  // Connection closed by peer
         
         request.append(buffer.data(), n);
         
@@ -134,8 +147,15 @@ bool HttpRequest::readHttpRequest() {
 }
 
 bool HttpRequest::setTimeout() {
-    struct timeval tv;
-    tv.tv_sec = Config::SOCKET_TIMEOUT;
-    tv.tv_usec = 0;
-    return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+    #ifdef _WIN32
+        DWORD timeout = Config::SOCKET_TIMEOUT * 1000;  // milliseconds
+        return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, 
+                         reinterpret_cast<const char*>(&timeout), 
+                         sizeof(timeout)) != SOCKET_ERROR;
+    #else
+        struct timeval tv;
+        tv.tv_sec = Config::SOCKET_TIMEOUT;
+        tv.tv_usec = 0;
+        return setsockopt(connfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+    #endif
 }

@@ -1,12 +1,28 @@
-#include "HttpResponse.h"
-#include "Utils.h"
-#include "MimeType.h"
 #include <sstream>
 #include <filesystem>
+#include <zlib.h>
+
+#include "Defs.h"
+#include "Utils.h"
+#include "MimeType.h"
+#include "HttpResponse.h"
 
 extern const MimeType MIME_TYPES[];
 
-HttpResponse::HttpResponse(int fd) : connfd(fd), statusCode(HttpStatus::OK) {}
+// HttpResponse::HttpResponse(int fd) : connfd(fd), statusCode(HttpStatus::OK) {}
+HttpResponse::HttpResponse(socket_t fd, HttpRequest& req) : connfd(fd), req(req), statusCode(HttpStatus::OK) {
+    headers["Server"] = "CPPServer/1.1";
+    headers["Connection"] = "keep-alive";
+    headers["Content-Type"] = "text/plain";
+    // headers["Date"] = Utils::getHttpDate();
+    headers["Access-Control-Allow-Origin"] = "*";
+    headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS";
+    headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization";
+    headers["Access-Control-Max-Age"] = "86400";
+    headers["Access-Control-Allow-Credentials"] = "true";
+    headers["Access-Control-Expose-Headers"] = "Authorization";
+    headers["Vary"] = "Origin, Access-Control-Request-Method, Access-Control-Request-Headers";
+}
 
 HttpResponse& HttpResponse::setStatus(HttpStatus code) { 
     statusCode = code; 
@@ -129,19 +145,15 @@ std::pair<HttpStatus, std::string> HttpResponse::sendFile(const std::string& fil
     }
 }
 
-std::string HttpResponse::toString() const {
+std::string HttpResponse::toString() {
+    prepareResponse();
+
     std::ostringstream response;
     response << "HTTP/1.1 " << (int)statusCode << " " << getStatusText() << "\r\n";
     
     auto headersCopy = headers;
     if (headersCopy.find("Content-Length") == headersCopy.end()) {
         headersCopy["Content-Length"] = std::to_string(body.length());
-    }
-    if (headersCopy.find("Connection") == headersCopy.end()) {
-        headersCopy["Connection"] = "close";
-    }
-    if (headersCopy.find("Server") == headersCopy.end()) {
-        headersCopy["Server"] = "CPPServer/1.1";
     }
 
     for (const auto& [key, value] : headersCopy) {
@@ -220,4 +232,66 @@ std::string HttpResponse::getStatusText() const {
         case HttpStatus::NETWORK_AUTHENTICATION_REQUIRED: return "Network Authentication Required";
     }
     return "Unknown";
+}
+
+bool HttpResponse::shouldCompress(const std::string& contentTypes) const {
+    return contentTypes.find("text/") != std::string::npos ||
+           contentTypes.find("application/json") != std::string::npos ||
+           contentTypes.find("application/javascript") != std::string::npos ||
+           contentTypes.find("application/xml") != std::string::npos || 
+           contentTypes.find("application/x-www-form-urlencoded") != std::string::npos;
+}
+
+std::string HttpResponse::compressGzip(const std::string& content) const {
+    std::ostringstream compressed;
+    z_stream zs;
+    zs.zalloc = Z_NULL;
+    zs.zfree = Z_NULL;
+    zs.opaque = Z_NULL;
+    zs.next_in = (Bytef*)content.data();
+    zs.avail_in = content.size();
+    
+    if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, 31, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        throw std::runtime_error("Failed to initialize zlib deflate");
+    }
+    
+    char outbuffer[32768];
+    std::string outstring;
+    
+    do {
+        zs.next_out = reinterpret_cast<Bytef*>(outbuffer);
+        zs.avail_out = sizeof(outbuffer);
+        
+        if (deflate(&zs, Z_FINISH) == Z_STREAM_ERROR) {
+            deflateEnd(&zs);
+            throw std::runtime_error("Failed to compress data");
+        }
+        
+        outstring.append(outbuffer, sizeof(outbuffer) - zs.avail_out);
+    } while (zs.avail_out == 0);
+    
+    deflateEnd(&zs);
+    return outstring;
+}
+
+void HttpResponse::prepareResponse() {
+    const std::string& acceptEncoding = req.headers.get("Accept-Encoding", "");
+    const std::string& contentType = headers["Content-Type"];
+    
+    if (body.length() > 1024 && 
+        acceptEncoding.find("gzip") != std::string::npos &&
+        shouldCompress(contentType) &&
+        headers.find("Content-Encoding") == headers.end()) {
+        
+        try {
+            std::string compressed = compressGzip(body);
+            if (compressed.length() < body.length()) {
+                body = compressed;
+                headers["Content-Encoding"] = "gzip";
+                headers["Content-Length"] = std::to_string(body.length());
+            }
+        } catch (const std::exception& e) {
+            throw std::runtime_error("Failed to compress response: " + std::string(e.what()));
+        }
+    }
 }

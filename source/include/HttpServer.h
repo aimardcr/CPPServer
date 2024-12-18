@@ -1,20 +1,22 @@
 #ifndef HTTP_SERVER_H
 #define HTTP_SERVER_H
 
-#include "HttpRequest.h"
-#include "HttpResponse.h"
 #include <string>
 #include <map>
 #include <functional>
 #include <atomic>
 #include <stdexcept>
 #include <type_traits>
-#include "json.hpp"
 
-using json = nlohmann::json;
-#include "HttpStatus.h"
-
+#include "Defs.h"
 #include "Config.h"
+
+#include "HttpStatus.h"
+#include "HttpRequest.h"
+#include "HttpResponse.h"
+
+#include "json.hpp"
+using json = nlohmann::json;
 
 template <typename T>
 struct Response {
@@ -78,7 +80,7 @@ Response<T> NotImplemented(T&& data) {
 
 class HttpContext {
 public:
-    HttpContext(int connfd) : req(connfd), res(connfd) {}
+    HttpContext(socket_t connfd) : req(connfd), res(connfd, req) {}
 
     HttpRequest req;
     HttpResponse res;
@@ -94,12 +96,11 @@ public:
         explicit ServerException(const std::string& msg) : std::runtime_error(msg) {}
     };
 
-    explicit HttpServer(const std::string& host, int port);
+    explicit HttpServer(const std::string& host = "0.0.0.0", int port = 8000);
     ~HttpServer();
 
     template<typename F>
     void route(const std::string& path, F&& handler) {
-        // TODO: find a better way, wildcard routes might have some issue in handleRequest
         addRouteFromHandler("GET", path, std::forward<F>(handler));
         addRouteFromHandler("POST", path, std::forward<F>(handler));
         addRouteFromHandler("PUT", path, std::forward<F>(handler));
@@ -144,8 +145,12 @@ public:
 private:
     std::string host_;
     int port_;
-    int sockfd_;
+    socket_t sockfd_;
     std::atomic<bool> running_;
+
+#ifdef _WIN32
+    WSADATA wsaData;
+#endif
 
     using AnyRouteHandler = std::function<void(HttpContext&)>;
     std::map<std::string, std::map<std::string, AnyRouteHandler>> routes_;
@@ -159,7 +164,7 @@ private:
 
     template<typename T>
     void addRoute(const std::string& method, const std::string& path, RouteHandler<T> handler) {
-        routes_[method][path] = [this, handler](HttpContext& ctx) { // Capture `this`
+        routes_[method][path] = [this, handler](HttpContext& ctx) {
             Response<T> response = handler(ctx);
             handleResponse(ctx, response);
         };
@@ -185,8 +190,11 @@ private:
         }
     }
 
-    void handleRequest(int connfd);
-    void sendResponse(const HttpResponse& response);
+    static void closeSocket(socket_t sock);
+    static std::string getLastError();
+    
+    void handleRequest(socket_t connfd);
+    void sendResponse(HttpResponse& response);
     void setupServer();
     void cleanup();
 };

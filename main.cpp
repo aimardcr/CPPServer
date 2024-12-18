@@ -1,6 +1,5 @@
 #include <iostream>
 #include <string>
-#include <unistd.h>
 
 #include "HttpStatus.h"
 #include "HttpRequest.h"
