@@ -1,3 +1,5 @@
 .vscode
 build
 server/main
+server/main.exe
+server/zlib1.dll
