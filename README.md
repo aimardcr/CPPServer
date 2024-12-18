@@ -1,5 +1,5 @@
 # C++ Server
-A simple yet powerful web server made using C++
+A simple yet powerful cross-platform web server made using C++
 
 # Examples
 Checkout [main.cpp](main.cpp)
