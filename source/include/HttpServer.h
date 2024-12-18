@@ -7,6 +7,7 @@
 #include <atomic>
 #include <stdexcept>
 #include <type_traits>
+#include <regex>
 
 #include "Defs.h"
 #include "Config.h"
@@ -44,39 +45,42 @@ struct Response {
 };
 
 template <typename T>
-Response<T> Ok(T&& data) {
-    return Response<T>(HttpStatus::OK, std::forward<T>(data));
-}
-
+Response<T> Ok(T&& data) { return Response<T>(HttpStatus::OK, std::forward<T>(data)); }
 template <typename T>
-Response<T> Created(T&& data) {
-    return Response<T>(HttpStatus::CREATED, std::forward<T>(data));
-}
-
+Response<T> Created(T&& data) { return Response<T>(HttpStatus::CREATED, std::forward<T>(data)); }
 template <typename T>
-Response<T> BadRequest(T&& data) {
-    return Response<T>(HttpStatus::BAD_REQUEST, std::forward<T>(data));
-}
-
+Response<T> BadRequest(T&& data) { return Response<T>(HttpStatus::BAD_REQUEST, std::forward<T>(data)); }
 template <typename T>
-Response<T> NotFound(T&& data) {
-    return Response<T>(HttpStatus::NOT_FOUND, std::forward<T>(data));
-}
-
+Response<T> NotFound(T&& data) { return Response<T>(HttpStatus::NOT_FOUND, std::forward<T>(data)); }
 template <typename T>
-Response<T> MethodNotAllowed(T&& data) {
-    return Response<T>(HttpStatus::METHOD_NOT_ALLOWED, std::forward<T>(data));
-}
-
+Response<T> MethodNotAllowed(T&& data) { return Response<T>(HttpStatus::METHOD_NOT_ALLOWED, std::forward<T>(data)); }
 template <typename T>
-Response<T> InternalServerError(T&& data) {
-    return Response<T>(HttpStatus::INTERNAL_SERVER_ERROR, std::forward<T>(data));
-}
-
+Response<T> InternalServerError(T&& data) { return Response<T>(HttpStatus::INTERNAL_SERVER_ERROR, std::forward<T>(data)); }
 template <typename T>
-Response<T> NotImplemented(T&& data) {
-    return Response<T>(HttpStatus::NOT_IMPLEMENTED, std::forward<T>(data));
-}
+Response<T> NotImplemented(T&& data) { return Response<T>(HttpStatus::NOT_IMPLEMENTED, std::forward<T>(data)); }
+
+class PathVars {
+public:
+    const std::string& get(const std::string& name) const {
+        auto it = vars_.find(name);
+        if (it == vars_.end()) {
+            throw std::out_of_range("Path variable not found: " + name);
+        }
+        return it->second;
+    }
+    
+    int getInt(const std::string& name) const {
+        return std::stoi(get(name));
+    }
+    
+    std::string getString(const std::string& name) const {
+        return get(name);
+    }
+    
+private:
+    friend class HttpServer;
+    std::map<std::string, std::string> vars_;
+};
 
 class HttpContext {
 public:
@@ -84,6 +88,7 @@ public:
 
     HttpRequest req;
     HttpResponse res;
+    PathVars path_vars;
 };
 
 class HttpServer {
@@ -143,6 +148,19 @@ public:
     int getPort() const;
 
 private:
+    struct RoutePattern {
+        std::string pattern;
+        std::vector<std::pair<std::string, std::string>> vars;
+        std::regex regex;
+        
+        RoutePattern(const std::string& pattern);
+        bool match(const std::string& path, std::map<std::string, std::string>& vars) const;
+        
+        bool operator<(const RoutePattern& other) const {
+            return pattern < other.pattern;
+        }
+    };
+
     std::string host_;
     int port_;
     socket_t sockfd_;
@@ -154,12 +172,24 @@ private:
 
     using AnyRouteHandler = std::function<void(HttpContext&)>;
     std::map<std::string, std::map<std::string, AnyRouteHandler>> routes_;
+    std::map<std::string, std::map<RoutePattern, AnyRouteHandler>> pattern_routes_;
 
     template<typename F>
     void addRouteFromHandler(const std::string& method, const std::string& path, F&& handler) {
-        using ResponseType = std::invoke_result_t<F, HttpContext&>;
-        using DataType = typename ResponseType::DataType;
-        addRoute<DataType>(method, path, std::forward<F>(handler));
+        if (path.find('{') != std::string::npos) {
+            RoutePattern pattern(path);
+            using ResponseType = std::invoke_result_t<F, HttpContext&>;
+            using DataType = typename ResponseType::DataType;
+            
+            pattern_routes_[method][pattern] = [this, handler](HttpContext& ctx) {
+                Response<DataType> response = handler(ctx);
+                handleResponse(ctx, response);
+            };
+        } else {
+            using ResponseType = std::invoke_result_t<F, HttpContext&>;
+            using DataType = typename ResponseType::DataType;
+            addRoute<DataType>(method, path, std::forward<F>(handler));
+        }
     }
 
     template<typename T>
@@ -169,6 +199,8 @@ private:
             handleResponse(ctx, response);
         };
     }
+
+    bool matchRoute(const std::string& method, const std::string& path, HttpContext& ctx, AnyRouteHandler& matched_handler);
 
     template<typename T>
     void handleResponse(HttpContext& ctx, const Response<T>& response) {
