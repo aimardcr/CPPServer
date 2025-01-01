@@ -97,32 +97,62 @@ std::string HttpRequest::getBoundary() const {
         return "";
     }
     
-    return contentType.substr(boundaryPos + 9);
+    std::string boundary = contentType.substr(boundaryPos + 9);
+    if (!boundary.empty() && boundary.front() == '"') {
+        boundary = boundary.substr(1, boundary.length() - 2);
+    }
+    return boundary;
 }
 
 std::vector<HttpRequest::MultipartPart> HttpRequest::splitMultipartData() const {
     std::vector<MultipartPart> parts;
     std::string boundary = getBoundary();
+    
     if (boundary.empty() || body.empty()) {
         return parts;
     }
 
-    std::string boundaryStart = "--" + boundary + "\r\n";
-    std::string boundaryMiddle = "\r\n--" + boundary + "\r\n";
-    std::string boundaryEnd = "\r\n--" + boundary + "--\r\n";
+    std::string boundaryMarker = "------" + boundary;
 
-    size_t pos = body.find(boundaryStart);
-    if (pos != 0) {
-        return parts;
+    size_t pos = body.find(boundaryMarker);
+
+    if (pos == std::string::npos) {
+        std::vector<std::string> alternates = {
+            "--" + boundary,
+            "----" + boundary,
+            "--------" + boundary
+        };
+        
+        for (const auto& alt : alternates) {
+            pos = body.find(alt);
+            if (pos != std::string::npos) {
+                boundaryMarker = alt;
+                break;
+            }
+        }
+        
+        if (pos == std::string::npos) {
+            return parts;
+        }
     }
 
-    pos += boundaryStart.length();
     while (pos < body.length()) {
         MultipartPart part;
         
-        size_t headersEnd = body.find("\r\n\r\n", pos);
-        if (headersEnd == std::string::npos) break;
+        pos += boundaryMarker.length();
+        if (pos + 1 < body.length() && body[pos] == '\r' && body[pos + 1] == '\n') {
+            pos += 2;
+        }
 
+        if (pos + 1 < body.length() && body[pos] == '-' && body[pos + 1] == '-') {
+            break;
+        }
+
+        size_t headersEnd = body.find("\r\n\r\n", pos);
+        if (headersEnd == std::string::npos) {
+            break;
+        }
+        
         std::istringstream headerStream(body.substr(pos, headersEnd - pos));
         std::string headerLine;
         while (std::getline(headerStream, headerLine) && !headerLine.empty()) {
@@ -137,20 +167,24 @@ std::vector<HttpRequest::MultipartPart> HttpRequest::splitMultipartData() const 
         }
 
         pos = headersEnd + 4;
-        size_t nextBoundary = body.find("\r\n--" + boundary, pos);
-        if (nextBoundary == std::string::npos) break;
 
+        size_t nextBoundary = body.find(boundaryMarker, pos);
+        if (nextBoundary == std::string::npos) {
+            break;
+        }
+
+        size_t contentLength = nextBoundary - pos;
+        if (contentLength > 2) {
+            contentLength -= 2;
+        }
+        
         part.data = std::vector<char>(
             body.begin() + pos,
-            body.begin() + nextBoundary
+            body.begin() + pos + contentLength
         );
 
         parts.push_back(std::move(part));
-
-        pos = nextBoundary + 2 + boundary.length() + 2;
-        if (body.substr(nextBoundary, boundaryEnd.length()) == boundaryEnd) {
-            break;
-        }
+        pos = nextBoundary;
     }
 
     return parts;
@@ -216,6 +250,7 @@ void HttpRequest::processMultipartPart(const MultipartPart& part) {
 
 void HttpRequest::parseMultipartData() {
     auto parts = splitMultipartData();
+
     for (const auto& part : parts) {
         processMultipartPart(part);
     }
@@ -250,21 +285,21 @@ bool HttpRequest::readHttpRequest() {
     bool isChunked = false;
     
     while (request.length() < Config::MAX_REQUEST_SIZE) {
-        if (!headersComplete) {
-            int n = recv(connfd, buffer.data(), static_cast<int>(buffer.size()), 0);
-            if (n <= 0) {
-                if (n < 0) {
-                    #ifdef _WIN32
-                        if (WSAGetLastError() == WSAEINTR) continue;
-                    #else
-                        if (errno == EINTR) continue;
-                    #endif
-                }
-                return false;
+        int n = recv(connfd, buffer.data(), static_cast<int>(buffer.size()), 0);
+        if (n <= 0) {
+            if (n < 0) {
+                #ifdef _WIN32
+                    if (WSAGetLastError() == WSAEINTR) continue;
+                #else
+                    if (errno == EINTR) continue;
+                #endif
             }
-            
-            request.append(buffer.data(), n);
-            
+            return false;
+        }
+        
+        request.append(buffer.data(), n);
+        
+        if (!headersComplete) {
             size_t headerEnd = request.find("\r\n\r\n");
             if (headerEnd != std::string::npos) {
                 if (!parseHeaders(request.substr(0, headerEnd))) {
@@ -284,42 +319,52 @@ bool HttpRequest::readHttpRequest() {
                 
                 body = request.substr(headerEnd + 4);
                 
-                if (isChunked) {
-                    std::string remaining_data = body;
-                    body.clear();
-                    
-                    size_t pos = 0;
-                    while (pos < remaining_data.length()) {
-                        size_t chunk_header_end = remaining_data.find("\r\n", pos);
-                        if (chunk_header_end == std::string::npos) break;
-                        
-                        std::string size_str = remaining_data.substr(pos, chunk_header_end - pos);
-                        size_t chunk_size;
-                        try {
-                            chunk_size = std::stoull(size_str, nullptr, 16);
-                        } catch (...) {
-                            break;
-                        }
-                        
-                        if (remaining_data.length() < chunk_header_end + 2 + chunk_size + 2) {
-                            break;
-                        }
-                        
-                        if (chunk_size > 0) {
-                            body.append(remaining_data.substr(chunk_header_end + 2, chunk_size));
-                        }
-                        
-                        pos = chunk_header_end + 2 + chunk_size + 2;
-                        
-                        if (chunk_size == 0) {
-                            return true;
-                        }
-                    }
-                    
-                    return readRemainingChunks();
+                if (contentLength == 0 && !isChunked) {
+                    break;
                 }
-                break;
             }
+        } else {
+            body.append(buffer.data(), n);
+        }
+        
+        if (contentLength > 0 && body.length() >= contentLength) {
+            body = body.substr(0, contentLength);
+            break;
+        }
+        
+        if (isChunked) {
+            std::string remaining_data = body;
+            body.clear();
+            
+            size_t pos = 0;
+            while (pos < remaining_data.length()) {
+                size_t chunk_header_end = remaining_data.find("\r\n", pos);
+                if (chunk_header_end == std::string::npos) break;
+                
+                std::string size_str = remaining_data.substr(pos, chunk_header_end - pos);
+                size_t chunk_size;
+                try {
+                    chunk_size = std::stoull(size_str, nullptr, 16);
+                } catch (...) {
+                    break;
+                }
+                
+                if (remaining_data.length() < chunk_header_end + 2 + chunk_size + 2) {
+                    break;
+                }
+                
+                if (chunk_size > 0) {
+                    body.append(remaining_data.substr(chunk_header_end + 2, chunk_size));
+                }
+                
+                pos = chunk_header_end + 2 + chunk_size + 2;
+                
+                if (chunk_size == 0) {
+                    return true;
+                }
+            }
+            
+            return readRemainingChunks();
         }
     }
 
