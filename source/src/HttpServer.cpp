@@ -267,12 +267,8 @@ void HttpServer::handleConnection(socket_t connfd) {
         }
 
         if (method == "GET" && path.find("/" + Config::STATIC_DIR + "/") == 0) {
-            std::string file_path = path.substr(Config::STATIC_DIR.length() + 2);
-            auto [status, body] = ctx.res.sendFile(file_path);
-            ctx.res.setStatus(status);
-            if (!body.empty()) {
-                ctx.res.setBody(body);
-            }
+            std::string file_path = Config::STATIC_DIR + path.substr(1 + Config::STATIC_DIR.length());
+            ctx.res = ctx.res.sendFile(file_path);
             sendResponse(ctx.res);
             return;
         }
