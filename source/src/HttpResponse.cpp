@@ -108,10 +108,9 @@ HttpResponse& HttpResponse::renderTemplate(const std::string& templateName) {
     }
 }
 
-std::pair<HttpStatus, std::string> HttpResponse::sendFile(const std::string& filePath) {
-    const std::string fullPath = std::string(Config::STATIC_DIR) + "/" + filePath;
+HttpResponse& HttpResponse::sendFile(const std::string& fullPath) {
     if (!std::filesystem::exists(fullPath)) {
-        return std::make_pair(HttpStatus::NOT_FOUND, "Not Found\n");
+        return setStatus(HttpStatus::NOT_FOUND).setBody("Not Found\n");
     }
 
     try {
@@ -129,9 +128,9 @@ std::pair<HttpStatus, std::string> HttpResponse::sendFile(const std::string& fil
         }
 
         setHeader("Content-Type", contentType);
-        return std::make_pair(HttpStatus::OK, "");
+        return *this;
     } catch (const std::exception& e) {
-        return std::make_pair(HttpStatus::INTERNAL_SERVER_ERROR, std::string(e.what()) + "\n");
+        return setStatus(HttpStatus::INTERNAL_SERVER_ERROR).setBody(std::string(e.what()) + "\n");
     }
 }
 
