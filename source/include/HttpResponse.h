@@ -29,7 +29,7 @@ public:
     HttpResponse& redirect(const std::string& location, HttpStatus status = HttpStatus::FOUND);
     HttpResponse& renderTemplate(const std::string& templateName);
 
-    std::pair<HttpStatus, std::string> sendFile(const std::string& filePath);
+    HttpResponse& sendFile(const std::string& fullPath);
 
     std::string toString();
 
